@@ -59,10 +59,53 @@ describe('queueReducer', () => {
       ]),
     });
     expect(state.items[0].status).toBe('failed');
-    state = queueReducer(state, { type: 'retry_failed' });
+    state = queueReducer(state, { type: 'retry_failed', ids: [state.items[0].id] });
     expect(state.items[0].status).toBe('ready');
     state = queueReducer(state, { type: 'clear_queue' });
     expect(state.items).toHaveLength(0);
+  });
+
+  it('retries only failures from the current summary and preserves older errors', () => {
+    let state = queueReducer(createEmptyQueueState(), {
+      type: 'append_files',
+      paths: ['C:\\docs\\a.pdf', 'C:\\docs\\b.pdf', 'C:\\docs\\c.pdf'],
+    });
+    const [idA, idB, idC] = state.items.map((item) => item.id);
+    const result = (id: string, status: 'failed' | 'succeeded') => ({
+      queueItemId: id,
+      path: `C:\\docs\\${id}.pdf`,
+      fileName: `${id}.pdf`,
+      status,
+      message: status === 'failed' ? `error-${id}` : undefined,
+    });
+
+    state = queueReducer(state, {
+      type: 'finish_print',
+      summary: createPrintSummary([result(idA, 'failed'), result(idB, 'failed')]),
+    });
+    state = queueReducer(state, {
+      type: 'finish_print',
+      summary: createPrintSummary([result(idC, 'failed')]),
+    });
+    state = queueReducer(state, { type: 'retry_failed', ids: [idC] });
+
+    expect(state.items.map((item) => item.status)).toEqual(['failed', 'failed', 'ready']);
+    expect(state.items[0].errorMessage).toBe(`error-${idA}`);
+    expect(state.items[1].errorMessage).toBe(`error-${idB}`);
+    expect(state.items[2].errorMessage).toBeUndefined();
+  });
+
+  it('marks only targeted items pending when a single-file print starts', () => {
+    let state = queueReducer(createEmptyQueueState(), {
+      type: 'append_files',
+      paths: ['C:\\docs\\a.pdf', 'C:\\docs\\b.pdf'],
+    });
+    const firstId = state.items[0].id;
+    state = queueReducer(state, { type: 'begin_print', ids: [firstId] });
+
+    expect(state.isPrinting).toBe(true);
+    expect(state.items[0].status).toBe('pending');
+    expect(state.items[1].status).toBe('ready');
   });
 
   it('supports batch update and batch remove', () => {

@@ -14,7 +14,7 @@ import {
   Sparkles,
   UploadCloud,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useReducer, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
 import {
   checkForAppUpdate,
@@ -36,9 +36,10 @@ import {
   mergePrintSettings,
   resolveDuplexAvailability,
   sanitizeSettingsForPrinter,
+  type FileSettingsOverride,
   type PrintSettings,
 } from './domain/printSettings';
-import { createEmptyQueueState } from './domain/queueTypes';
+import { createEmptyQueueState, type QueueItem } from './domain/queueTypes';
 import { parsePageRangeExpression } from './domain/pageRange';
 import { PrintQueue } from './features/queue/PrintQueue';
 import { createPrintSummary, queueReducer } from './features/queue/queueReducer';
@@ -63,6 +64,7 @@ export function App() {
     createDefaultGlobalSettings(),
   );
   const [settingsItemId, setSettingsItemId] = useState<string | null>(null);
+  const printStartLockRef = useRef(false);
   const [proxyModalOpen, setProxyModalOpen] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const [allowAssociationFallback, setAllowAssociationFallback] = useState(false);
@@ -208,19 +210,70 @@ export function App() {
     appendPaths(paths);
   };
 
-  const buildBatchPayload = (onlyFailed = false): PrintQueueItemPayload[] | null => {
+  const ensurePrintDestination = (): boolean => {
     if (!globalSettings.printerName) {
       message.warning('请先选择打印机');
-      return null;
+      return false;
     }
     if (!availability.printEnabled) {
       message.error(availability.reasons.join('；') || '当前打印机不可用');
-      return null;
+      return false;
     }
+    return true;
+  };
 
+  const buildItemPayload = (
+    item: QueueItem,
+    override: FileSettingsOverride = item.override,
+  ): PrintQueueItemPayload | null => {
+    const resolved = mergePrintSettings(globalSettings, override);
+    // 只下发真实可达成的能力：打印机不支持双面，或文件类型（文本）无法强制双面时，按单面提交。
+    const duplexAvailability = resolveDuplexAvailability({
+      printerDuplexEnabled: availability.duplexEnabled,
+      kind: item.kind,
+    });
+    const effectiveSides = effectiveSidesMode(resolved.sidesMode, duplexAvailability);
+    if (resolved.pageRange.mode === 'custom') {
+      const parseResult = parsePageRangeExpression(
+        resolved.pageRange.expression,
+        item.pageCount ?? undefined,
+      );
+      if (!parseResult.ok) {
+        message.error(`${item.fileName}：${parseResult.message}`);
+        return null;
+      }
+    }
+    return {
+      queueItemId: item.id,
+      path: item.path,
+      fileName: item.fileName,
+      allowAssociationFallback,
+      settings: {
+        printerName: resolved.printerName,
+        colorMode: resolved.colorMode,
+        sidesMode: effectiveSides,
+        flipMode: resolved.flipMode,
+        copies: resolved.copies,
+        pageRangeMode: resolved.pageRange.mode,
+        pageRangeExpression: resolved.pageRange.expression,
+      },
+    };
+  };
+
+  const buildBatchPayload = (onlyFailed = false): PrintQueueItemPayload[] | null => {
+    if (!ensurePrintDestination()) return null;
+
+    const failedResultIds = onlyFailed
+      ? new Set(
+          queueState.lastSummary?.results
+            .filter((result) => result.status === 'failed')
+            .map((result) => result.queueItemId) ?? [],
+        )
+      : null;
     const sourceItems = queueState.items.filter((item) => {
-      if (onlyFailed) {
-        return item.status === 'failed' || item.status === 'ready';
+      if (failedResultIds) {
+        // Retry only failures from the displayed result, never unrelated ready files.
+        return failedResultIds.has(item.id);
       }
       return item.status !== 'succeeded' && item.kind !== 'unknown';
     });
@@ -241,46 +294,14 @@ export function App() {
 
     const payloads: PrintQueueItemPayload[] = [];
     for (const item of sourceItems) {
-      const resolved = mergePrintSettings(globalSettings, item.override);
-      // 只下发真实可达成的能力：打印机不支持双面，或文件类型（文本）无法强制双面时，按单面提交。
-      const duplexAvailability = resolveDuplexAvailability({
-        printerDuplexEnabled: availability.duplexEnabled,
-        kind: item.kind,
-      });
-      const effectiveSides = effectiveSidesMode(resolved.sidesMode, duplexAvailability);
-      if (resolved.pageRange.mode === 'custom') {
-        const parseResult = parsePageRangeExpression(
-          resolved.pageRange.expression,
-          item.pageCount ?? undefined,
-        );
-        if (!parseResult.ok) {
-          message.error(`${item.fileName}：${parseResult.message}`);
-          return null;
-        }
-      }
-      payloads.push({
-        queueItemId: item.id,
-        path: item.path,
-        fileName: item.fileName,
-        allowAssociationFallback,
-        settings: {
-          printerName: resolved.printerName,
-          colorMode: resolved.colorMode,
-          sidesMode: effectiveSides,
-          flipMode: resolved.flipMode,
-          copies: resolved.copies,
-          pageRangeMode: resolved.pageRange.mode,
-          pageRangeExpression: resolved.pageRange.expression,
-        },
-      });
+      const payload = buildItemPayload(item);
+      if (!payload) return null;
+      payloads.push(payload);
     }
     return payloads;
   };
 
-  const executePrint = async (onlyFailed = false) => {
-    const payloads = buildBatchPayload(onlyFailed);
-    if (!payloads) return;
-
+  const confirmOfficePrinting = async (payloads: PrintQueueItemPayload[]): Promise<boolean> => {
     const hasOffice = payloads.some((item) =>
       /\.(doc|docx|xls|xlsx|ppt|pptx)$/i.test(item.path),
     );
@@ -296,11 +317,20 @@ export function App() {
           onCancel: () => resolve(false),
         });
       });
-      if (!confirmed) return;
+      if (!confirmed) return false;
       setAllowAssociationFallback(true);
     }
+    return true;
+  };
 
-    dispatch({ type: 'begin_print' });
+  const executePayloads = async (
+    payloads: PrintQueueItemPayload[],
+    options: { offerQueueClear: boolean },
+  ) => {
+    dispatch({
+      type: 'begin_print',
+      ids: payloads.map((item) => item.queueItemId),
+    });
     try {
       const batchResult = await runPrintBatch({
         items: payloads.map((item) => ({ ...item, allowAssociationFallback: true })),
@@ -308,6 +338,8 @@ export function App() {
       dispatch({ type: 'finish_print', summary: createPrintSummary(batchResult.results) });
       if (batchResult.failed > 0) {
         message.warning(`完成：成功 ${batchResult.succeeded}，失败 ${batchResult.failed}`);
+      } else if (!options.offerQueueClear) {
+        message.success(`${payloads[0]?.fileName ?? '当前文件'}：打印完成`);
       } else {
         message.success(`全部完成：成功 ${batchResult.succeeded}`);
         Modal.confirm({
@@ -335,7 +367,46 @@ export function App() {
         ),
       });
       message.error(error instanceof Error ? error.message : '打印执行失败');
+    } finally {
+      printStartLockRef.current = false;
     }
+  };
+
+  const acquirePrintStartLock = (): boolean => {
+    if (printStartLockRef.current || queueState.isPrinting) {
+      message.warning('当前已有打印任务，请完成后再试');
+      return false;
+    }
+    // Set synchronously before the Office confirmation await to prevent double submission.
+    printStartLockRef.current = true;
+    return true;
+  };
+
+  const executePrint = async (onlyFailed = false) => {
+    if (!acquirePrintStartLock()) return;
+    const payloads = buildBatchPayload(onlyFailed);
+    if (!payloads || !(await confirmOfficePrinting(payloads))) {
+      printStartLockRef.current = false;
+      return;
+    }
+    await executePayloads(payloads, { offerQueueClear: true });
+  };
+
+  const executeSinglePrint = async (item: QueueItem, override: FileSettingsOverride) => {
+    if (!acquirePrintStartLock()) return;
+    if (!ensurePrintDestination()) {
+      printStartLockRef.current = false;
+      return;
+    }
+    const payload = buildItemPayload(item, override);
+    if (!payload || !(await confirmOfficePrinting([payload]))) {
+      printStartLockRef.current = false;
+      return;
+    }
+
+    dispatch({ type: 'update_override', id: item.id, override });
+    setSettingsItemId(null);
+    await executePayloads([payload], { offerQueueClear: false });
   };
 
   const promptInstallUpdate = (updateInfo: UpdateInfo) => {
@@ -545,7 +616,10 @@ export function App() {
             <PrintSummary
               summary={queueState.lastSummary}
               onRetryFailed={() => {
-                dispatch({ type: 'retry_failed' });
+                const failedIds = queueState.lastSummary?.results
+                  .filter((result) => result.status === 'failed')
+                  .map((result) => result.queueItemId) ?? [];
+                dispatch({ type: 'retry_failed', ids: failedIds });
                 void executePrint(true);
               }}
             />
@@ -590,6 +664,9 @@ export function App() {
           if (!settingsItem) return;
           dispatch({ type: 'update_override', id: settingsItem.id, override });
           message.success('已保存单文件设置');
+        }}
+        onPrint={(override) => {
+          if (settingsItem) void executeSinglePrint(settingsItem, override);
         }}
       />
 

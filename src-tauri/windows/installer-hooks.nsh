@@ -3,14 +3,14 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   WriteRegStr HKCU "Software\Classes\*\shell\PrintAssist" "" "使用打印助手打印"
-  WriteRegStr HKCU "Software\Classes\*\shell\PrintAssist" "Icon" "$INSTDIR\PrintAssist.exe"
-  WriteRegStr HKCU "Software\Classes\*\shell\PrintAssist\command" "" '"$INSTDIR\PrintAssist.exe" "%1"'
+  WriteRegStr HKCU "Software\Classes\*\shell\PrintAssist" "Icon" "$INSTDIR\print-assist.exe"
+  WriteRegStr HKCU "Software\Classes\*\shell\PrintAssist\command" "" '"$INSTDIR\print-assist.exe" "%1"'
 
   WriteRegStr HKCU "Software\Classes\Directory\shell\PrintAssist" "" "使用打印助手打印文件夹"
-  WriteRegStr HKCU "Software\Classes\Directory\shell\PrintAssist" "Icon" "$INSTDIR\PrintAssist.exe"
-  WriteRegStr HKCU "Software\Classes\Directory\shell\PrintAssist\command" "" '"$INSTDIR\PrintAssist.exe" "%1"'
+  WriteRegStr HKCU "Software\Classes\Directory\shell\PrintAssist" "Icon" "$INSTDIR\print-assist.exe"
+  WriteRegStr HKCU "Software\Classes\Directory\shell\PrintAssist\command" "" '"$INSTDIR\print-assist.exe" "%1"'
 
-  CreateShortCut "$SENDTO\打印助手.lnk" "$INSTDIR\PrintAssist.exe"
+  CreateShortCut "$SENDTO\打印助手.lnk" "$INSTDIR\print-assist.exe"
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL

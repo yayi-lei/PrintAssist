@@ -58,7 +58,9 @@ pub fn run() {
             commands::download_and_install_update,
             commands::open_release_page,
             commands::validate_supported_path,
-            commands::probe_document_info
+            commands::probe_document_info,
+            documents::preview::prepare_document_preview,
+            documents::preview::render_document_preview_page
         ])
         .run(tauri::generate_context!())
         .expect("error while running PrintAssist");

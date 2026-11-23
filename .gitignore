@@ -18,3 +18,6 @@ proc-check.txt
 *.exit.log
 rustfmt-install.log
 .cursor/
+
+# Local Windows release artifacts; upload these via GitHub Releases.
+release/

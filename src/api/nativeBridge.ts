@@ -61,6 +61,50 @@ export async function probeDocumentInfo(path: string): Promise<{ pageCount: numb
   }
 }
 
+export interface PreparedDocumentPreview {
+  pdfPath: string;
+  pageCount: number;
+}
+
+export interface RenderedDocumentPreviewPage {
+  pageNumber: number;
+  width: number;
+  height: number;
+  pngBase64: string;
+}
+
+/**
+ * Prepare a PDF-backed preview. Office files are converted on demand and unchanged
+ * conversions may be reused from the native process cache. Temporary files stay in
+ * the OS temp directory; closing the UI cancels further requests, not the print job.
+ */
+export async function prepareDocumentPreview(path: string): Promise<PreparedDocumentPreview> {
+  if (!isTauriRuntime()) {
+    throw new Error('逐页预览需要在桌面应用中运行');
+  }
+  return invokeCommand<PreparedDocumentPreview>('prepare_document_preview', { path });
+}
+
+/**
+ * Render one 1-based physical page from PreparedDocumentPreview.pdfPath.
+ * maxEdge is the longest output edge in pixels (native range 64–2048).
+ * pngBase64 contains raw Base64 without a data-URL prefix.
+ */
+export async function renderDocumentPreviewPage(
+  pdfPath: string,
+  pageNumber: number,
+  maxEdge = 240,
+): Promise<RenderedDocumentPreviewPage> {
+  if (!isTauriRuntime()) {
+    throw new Error('逐页预览需要在桌面应用中运行');
+  }
+  return invokeCommand<RenderedDocumentPreviewPage>('render_document_preview_page', {
+    path: pdfPath,
+    pageNumber,
+    maxEdge,
+  });
+}
+
 
 export interface ProxyConfigPayload {
   useSystemProxy: boolean;

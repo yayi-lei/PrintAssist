@@ -1,6 +1,7 @@
 pub mod office;
 pub mod page_range;
 pub mod pdf_pages;
+pub mod preview;
 
 #[cfg(windows)]
 pub mod image_print;

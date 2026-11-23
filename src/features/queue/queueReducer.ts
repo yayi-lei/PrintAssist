@@ -17,9 +17,9 @@ export type QueueAction =
   | { type: 'batch_update_override'; ids: string[]; overridePatch: Partial<FileSettingsOverride> }
   | { type: 'set_item_status'; id: string; status: QueueItem['status']; errorMessage?: string }
   | { type: 'set_item_page_count'; id: string; pageCount: number }
-  | { type: 'begin_print' }
+  | { type: 'begin_print'; ids: string[] }
   | { type: 'finish_print'; summary: PrintJobSummary }
-  | { type: 'retry_failed' }
+  | { type: 'retry_failed'; ids: string[] }
   | { type: 'move_item'; id: string; direction: 'up' | 'down' };
 
 
@@ -185,17 +185,20 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
         ),
       };
 
-    case 'begin_print':
+    case 'begin_print': {
+      const targetIds = new Set(action.ids);
       return {
         ...state,
         isPrinting: true,
         lastSummary: null,
-        items: state.items.map((item) =>
-          item.status === 'failed' || item.status === 'succeeded' || item.status === 'skipped'
+        items: state.items.map((item) => {
+          if (!targetIds.has(item.id)) return item;
+          return item.status === 'failed' || item.status === 'succeeded' || item.status === 'skipped'
             ? item
-            : { ...item, status: 'pending', errorMessage: undefined },
-        ),
+            : { ...item, status: 'pending', errorMessage: undefined };
+        }),
       };
+    }
 
     case 'finish_print': {
       const resultById = new Map(
@@ -220,12 +223,13 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
       };
     }
 
-    case 'retry_failed':
+    case 'retry_failed': {
+      const retryIds = new Set(action.ids);
       return {
         ...state,
         lastSummary: null,
         items: state.items.map((item) =>
-          item.status === 'failed'
+          retryIds.has(item.id) && item.status === 'failed'
             ? {
                 ...item,
                 status: 'ready',
@@ -234,6 +238,7 @@ export function queueReducer(state: QueueState, action: QueueAction): QueueState
             : item,
         ),
       };
+    }
 
     case 'move_item': {
       const currentIndex = state.items.findIndex((item) => item.id === action.id);
